@@ -143,7 +143,7 @@ class SMDataParallelRunner(process.ProcessRunner):
             "-x",
             smdataparallel_flag,
             "-x",
-            "FI_PROVIDER=sockets",
+            "FI_PROVIDER=efa",
             "-x",
             "RDMAV_FORK_SAFE=1",
             "-x",
@@ -241,22 +241,74 @@ class SMDataParallelRunner(process.ProcessRunner):
         self._setup()
 
         cmd = self._create_command()
-        cmd.extend(super(SMDataParallelRunner, self)._create_command())
-        logging_config.log_script_invocation(cmd, self._env_vars)
+        num_hosts = len(self._hosts)
+        sleep_time = 10
+
         if wait:
-            process_spawned = process.check_error(
-                cmd,
-                errors.ExecuteUserScriptError,
-                capture_error=capture_error,
-                cwd=environment.code_dir,
-            )
+            if num_hosts > 1:
+                # multi-node homogeneous [2 mpirun calls]
+                cmd.extend(["herringserver"])
+                server_cmd = cmd
+                logging_config.log_script_invocation(server_cmd, self._env_vars)
+                server_process = process.create(
+                    server_cmd,
+                    errors.ExecuteUserScriptError,
+                    capture_error=False,
+                    cwd=environment.code_dir,
+                )
+                logging.info(f'waiting for {sleep_time} seconds now')
+                time.sleep(sleep_time)
+                worker_cmd = cmd[:-1] + super(SMDataParallelRunner, self)._create_command()
+                logging_config.log_script_invocation(worker_cmd, self._env_vars)
+                worker_process = process.create(
+                    worker_cmd,
+                    errors.ExecuteUserScriptError,
+                    capture_error=False,
+                    cwd=environment.code_dir,
+                )
+                worker_process.wait()
+                server_process.wait()
+                process_spawned = worker_process
+            else:
+                cmd.extend(super(SMDataParallelRunner, self)._create_command())
+                logging_config.log_script_invocation(cmd, self._env_vars)
+                # singlenode [1 mpirun invocation]
+                process_spawned = process.check_error(
+                    cmd,
+                    errors.ExecuteUserScriptError,
+                    capture_error=capture_error,
+                    cwd=environment.code_dir,
+                )
         else:
-            process_spawned = process.create(
-                cmd,
-                errors.ExecuteUserScriptError,
-                capture_error=capture_error,
-                cwd=environment.code_dir,
-            )
+            if num_hosts > 1:
+                # multi-node homogeneous [2 mpirun calls]
+                cmd.extend(["herringserver"])
+                server_cmd = cmd
+                server_process = process.create(
+                    server_cmd,
+                    errors.ExecuteUserScriptError,
+                    capture_error=capture_error,
+                    cwd=environment.code_dir,
+                )
+                logging.info(f'waiting for {sleep_time} seconds now')
+                time.sleep(sleep_time)
+                worker_cmd = cmd[:-1] + super(SMDataParallelRunner, self)._create_command()
+                worker_process = process.create(
+                    worker_cmd,
+                    errors.ExecuteUserScriptError,
+                    capture_error=capture_error,
+                    cwd=environment.code_dir,
+                )
+                process_spawned = worker_process
+            else:
+                # singlenode [1 mpirun invocation]
+                cmd.extend(super(SMDataParallelRunner, self)._create_command())
+                process_spawned = process.create(
+                    cmd,
+                    errors.ExecuteUserScriptError,
+                    capture_error=capture_error,
+                    cwd=environment.code_dir,
+                )
         self._tear_down()
         return process_spawned
 
